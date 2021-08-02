@@ -1,0 +1,25 @@
+mode: set
+hw1_tree/main.go:11.13,13.47 2 0
+hw1_tree/main.go:16.2,19.16 4 0
+hw1_tree/main.go:13.47,14.39 1 0
+hw1_tree/main.go:19.16,20.21 1 0
+hw1_tree/main.go:23.68,26.2 2 1
+hw1_tree/main.go:28.82,41.29 7 1
+hw1_tree/main.go:47.2,49.31 3 1
+hw1_tree/main.go:52.2,56.29 3 1
+hw1_tree/main.go:41.29,42.33 1 1
+hw1_tree/main.go:42.33,45.4 2 1
+hw1_tree/main.go:49.31,51.3 1 1
+hw1_tree/main.go:56.29,57.19 1 1
+hw1_tree/main.go:57.19,59.20 2 1
+hw1_tree/main.go:66.4,67.54 2 1
+hw1_tree/main.go:59.20,62.5 2 1
+hw1_tree/main.go:62.10,65.5 2 1
+hw1_tree/main.go:68.9,68.24 1 1
+hw1_tree/main.go:68.24,69.23 1 1
+hw1_tree/main.go:69.23,70.21 1 1
+hw1_tree/main.go:70.21,72.6 1 1
+hw1_tree/main.go:72.11,74.6 1 1
+hw1_tree/main.go:75.10,76.21 1 1
+hw1_tree/main.go:76.21,78.6 1 1
+hw1_tree/main.go:78.11,80.6 1 1

@@ -1,0 +1,345 @@
+package main
+
+import (
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+var (
+	errTest = errors.New("testing")
+	client  = &http.Client{Timeout: time.Second}
+)
+
+type SearchClient struct {
+	// токен, по которому происходит авторизация на внешней системе, уходит туда через хедер
+	AccessToken string
+	// урл внешней системы, куда идти
+	URL string
+}
+
+type User struct {
+	Name      string
+	Id        int    `xml:"id"`
+	FirstName string `xml:"first_name"`
+	LastName  string `xml:"last_name"`
+	Age       int    `xml:"age"`
+	About     string `xml:"about"`
+	Gender    string `xml:"gender"`
+}
+
+type Users struct {
+	XMLName xml.Name `xml:"root"`
+	Row     []User   `xml:"row"`
+}
+
+type SearchResponse struct {
+	Users    []User
+	NextPage bool
+}
+
+type SearchErrorResponse struct {
+	Error string
+}
+
+const (
+	OrderByAsc  = -1
+	OrderByAsIs = 0
+	OrderByDesc = 1
+
+	ErrorBadOrderField = `OrderField invalid`
+)
+
+type SearchRequest struct {
+	Limit      int    // сколько записей вернуть (0 = все)
+	Offset     int    // начиная с какой вернуть. Можно учесть после сортировки
+	Query      string // strings.Contains по полям `Name` или `About`
+	OrderField string // поле по которому сортировать (`Id`, `Age`, `Name`, ``=`Name`, other = err)
+	OrderBy    int    // сортировка -1 по убыванию, 0 как встретилось, 1 по возрастанию
+}
+
+func main() {
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	go func() {
+		fmt.Println("server()")
+		http.HandleFunc("/", SearchServer)
+		http.ListenAndServe(":9091", nil)
+		wg.Done()
+	}()
+
+	fmt.Println("client()")
+	searchClient := &SearchClient{
+		AccessToken: "password",
+		URL:         "http://127.0.0.1:9091",
+	}
+	req := SearchRequest{
+		Limit:      5,
+		Offset:     0,
+		Query:      "",
+		OrderField: "",
+		OrderBy:    0,
+	}
+	res, _ := searchClient.FindUsers(req)
+	fmt.Println(res)
+
+	wg.Wait()
+}
+
+func dataProcessing(params *SearchRequest, users []User) []User {
+
+	var selectQuery []User
+	// выборка
+	if params.Query == "" {
+		selectQuery = append(selectQuery, users...)
+
+	} else {
+		for _, u := range users {
+			if strings.Contains(u.About, params.Query) || strings.Contains(u.Name, params.Query) {
+				selectQuery = append(selectQuery, u)
+			}
+		}
+	}
+	// сортировка
+	if params.OrderBy == -1 || params.OrderBy == 1 {
+		switch params.OrderField {
+		case "Id":
+			sort.SliceStable(selectQuery, func(i, j int) bool {
+				if params.OrderBy == 1 {
+					return selectQuery[i].Id < selectQuery[j].Id
+				} else {
+					return selectQuery[i].Id > selectQuery[j].Id
+				}
+			})
+		case "Age":
+			sort.SliceStable(selectQuery, func(i, j int) bool {
+				if params.OrderBy == 1 {
+					return selectQuery[i].Age < selectQuery[j].Age
+				} else {
+					return selectQuery[i].Age > selectQuery[j].Age
+				}
+			})
+		case "Name", "":
+			sort.SliceStable(selectQuery, func(i, j int) bool {
+				if params.OrderBy == 1 {
+					return selectQuery[i].Name < selectQuery[j].Name
+				} else {
+					return selectQuery[i].Name > selectQuery[j].Name
+				}
+			})
+		}
+
+	}
+	// обрезка
+	selectOffsetUser := offsetUsers(params, selectQuery)
+	selectLimitUser := limitUsers(params, selectOffsetUser)
+
+	return selectLimitUser
+
+}
+func offsetUsers(params *SearchRequest, users []User) []User {
+	if params.Offset >= len(users) {
+		return users
+	}
+	return users[params.Offset:]
+}
+func limitUsers(params *SearchRequest, users []User) []User {
+	if params.Limit > len(users) || params.Limit == 0 {
+		return users
+	}
+	return users[:params.Limit]
+}
+
+func SearchServer(w http.ResponseWriter, r *http.Request) {
+	// token from header
+	// if r.Header.Get("AccessToken") == "" {
+	// 	http.Error(w, "error access token", http.StatusUnauthorized)
+	// 	return
+	// }
+
+	// read []User from xml
+	users, err := readDataXML("dataset.xml")
+	if err != nil {
+		http.Error(w, "Internal Server Error:\nerror data file", http.StatusInternalServerError)
+		return
+	}
+
+	//	query := r.URL.Query(); key := query.Get("key")
+	// r.ParseForm(); key, present := r.Form["key"] //key=["color", "price", "brand"]
+	// key := r.FormValue("key") //key=["color"]
+
+	params, err := getQueryParams(w, r)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Params: %+v \n", params)
+
+	selectUsers := dataProcessing(params, users)
+
+	log.Printf("%v", selectUsers)
+
+	// for name, headers := range r.Header {
+	// 	for _, h := range headers {
+	// 		fmt.Fprintf(os.Stderr, "%v\n", name, h)
+	// 	}
+	// }
+
+}
+func readDataXML(fileName string) ([]User, error) {
+	xmlFile, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer xmlFile.Close()
+
+	byteValue, err := ioutil.ReadAll(xmlFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var xmlUsers Users
+	err = xml.Unmarshal(byteValue, &xmlUsers)
+	if err != nil {
+		return nil, err
+	}
+
+	users := make([]User, 0, len(xmlUsers.Row))
+	for _, u := range xmlUsers.Row {
+		item := User{
+			Id:     u.Id,
+			Name:   u.FirstName + " " + u.LastName,
+			Age:    u.Age,
+			About:  u.About,
+			Gender: u.Gender,
+		}
+		//		fmt.Fprintf(os.Stderr, "%s\n", item.Name)
+		users = append(users, item)
+	}
+	return users, nil
+
+}
+
+func getQueryParams(w http.ResponseWriter, r *http.Request) (*SearchRequest, error) {
+	parsQuery := r.URL.Query()
+
+	limit, err := strconv.Atoi(parsQuery.Get("limit"))
+	if err != nil {
+		log.Println("limit:", err)
+		return nil, err
+	}
+
+	offset, err := strconv.Atoi(parsQuery.Get("offset"))
+	if err != nil {
+		log.Println("offset:", err)
+		return nil, err
+	}
+	query := parsQuery.Get("query")
+
+	orderField := parsQuery.Get("order_field")
+	if orderField != "Id" && orderField != "Age" && orderField != "Name" && orderField != "" {
+		log.Println("order_field: invalid value")
+		return nil, errors.New(ErrorBadOrderField)
+	}
+
+	orderBy, err := strconv.Atoi(parsQuery.Get("order_by"))
+	if err != nil || orderBy < -1 || orderBy > 1 {
+		log.Println("order_by: invalid value")
+		return nil, errors.New("OrderBy invalid")
+	}
+
+	return &SearchRequest{
+		Limit:      limit,
+		Offset:     offset,
+		Query:      query,
+		OrderField: orderField,
+		OrderBy:    orderBy,
+	}, nil
+}
+
+// FindUsers отправляет запрос во внешнюю систему, которая непосредственно ищет пользоваталей
+func (srv *SearchClient) FindUsers(req SearchRequest) (*SearchResponse, error) {
+
+	searcherParams := url.Values{}
+
+	if req.Limit < 0 {
+		return nil, fmt.Errorf("limit must be > 0")
+	}
+	if req.Limit > 25 {
+		req.Limit = 25
+	}
+	if req.Offset < 0 {
+		return nil, fmt.Errorf("offset must be > 0")
+	}
+
+	//нужно для получения следующей записи, на основе которой мы скажем - можно показать переключатель следующей страницы или нет
+	req.Limit++
+
+	searcherParams.Add("limit", strconv.Itoa(req.Limit))
+	searcherParams.Add("offset", strconv.Itoa(req.Offset))
+	searcherParams.Add("query", req.Query)
+	searcherParams.Add("order_field", req.OrderField)
+	searcherParams.Add("order_by", strconv.Itoa(req.OrderBy))
+
+	searcherReq, err := http.NewRequest("GET", srv.URL+"?"+searcherParams.Encode(), nil)
+	searcherReq.Header.Add("AccessToken", srv.AccessToken)
+	log.Printf("send\n")
+	resp, err := client.Do(searcherReq)
+	log.Printf("client do\n")
+	log.Printf("%v\n", resp)
+	if err != nil {
+		if err, ok := err.(net.Error); ok && err.Timeout() {
+			return nil, fmt.Errorf("timeout for %s", searcherParams.Encode())
+		}
+		return nil, fmt.Errorf("unknown error %s", err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("Bad AccessToken")
+	case http.StatusInternalServerError:
+		return nil, fmt.Errorf("SearchServer fatal error")
+	case http.StatusBadRequest:
+		errResp := SearchErrorResponse{}
+		err = json.Unmarshal(body, &errResp)
+		if err != nil {
+			return nil, fmt.Errorf("cant unpack error json: %s", err)
+		}
+		if errResp.Error == "ErrorBadOrderField" {
+			return nil, fmt.Errorf("OrderFeld %s invalid", req.OrderField)
+		}
+		return nil, fmt.Errorf("unknown bad request error: %s", errResp.Error)
+	}
+
+	data := []User{}
+	err = json.Unmarshal(body, &data)
+	if err != nil {
+		return nil, fmt.Errorf("cant unpack result json: %s", err)
+	}
+
+	result := SearchResponse{}
+	if len(data) == req.Limit {
+		result.NextPage = true
+		result.Users = data[0 : len(data)-1]
+	} else {
+		result.Users = data[0:len(data)]
+	}
+
+	return &result, err
+}
