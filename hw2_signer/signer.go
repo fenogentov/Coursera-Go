@@ -30,9 +30,8 @@ func rawToSrting(dRAW interface{}) (string, error) {
 	var dString string
 	var err error
 
-	switch x := dRAW.(type) {
+	switch dRAW.(type) {
 	case int:
-		fmt.Printf("%v \n", x.Value)
 		d, ok := dRAW.(int)
 		if !ok {
 			fmt.Println("cant convert result data to string")
